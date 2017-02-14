@@ -1,0 +1,4 @@
+SELECT   LISTAGG(strprodcd || ';' || nprodver, ', ')
+            WITHIN GROUP (ORDER BY strprodcd)
+  FROM   com_pol_prod_dtl
+ WHERE   strpolnbr = '10654323';

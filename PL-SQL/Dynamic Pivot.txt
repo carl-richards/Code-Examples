@@ -1,0 +1,125 @@
+Dynamic Pivot
+
+I have a table like this:
+
+create table fish (
+fish_id number,
+fish_type varchar2(3),
+fish_weight number);
+
+insert into fish values (1,'COD',20);
+insert into fish values(1,'HAD',30);
+insert into fish values(2,'COD',45);
+insert into fish values(2,'HKE',10);
+insert into fish values(2,'LIN',55);
+insert into fish values(3,'CTY',90);
+insert into fish values (3,'HAD',60);
+insert into fish values (3,'COD',52);
+
+I would like it to be displayed as
+
+COD HAD HKE LIN CTY .......
+1 20 30 X X
+2 45 X 10 55
+3 52 60 X X
+....
+
+The columns aren’t fixed in number or name, because there can be multiple species.
+
+How can I create this display?
+
+In SQL you need to know the number, name, and datatype of every single column at parse time, so you’ll have to use a bit of dynamic SQL. Before I show the dynamic SQL, I will first develop a static SQL statement that works against the existing data. Listing 1 contains a query that works in all releases of Oracle Database. (Note that in Oracle Database 11g and later releases, I could have used the built-in PIVOT syntax, but it too requires dynamic SQL.)
+
+Code Listing 1: Static SQL for existing data
+
+ 
+
+SQL> select fish_id,
+  2         sum(decode(fish_type,'COD',fish_weight)) cod,
+  3         sum(decode(fish_type,'HAD',fish_weight)) had,
+  4         sum(decode(fish_type,'HKE',fish_weight)) hke,
+  5         sum(decode(fish_type,'LIN',fish_weight)) lin,
+  6         sum(decode(fish_type,'CTY',fish_weight)) cty
+  7    from fish
+  8   group by fish_id
+  9   order by fish_id
+ 10  /
+
+   FISH_ID        COD        HAD        HKE        LIN        CTY
+——————————  —————————  ————————— ——————————  —————————  —————————
+         1         20         30
+         2         45                    10         55
+         3         52         60                               90
+
+ 
+
+Now, to make the SQL in Listing 1 dynamic, I will create a stored procedure that executes a query to determine what the column names are and use that information to dynamically construct the pivot query, as shown in Listing 2.
+
+Code Listing 2: Stored procedure that determines column names
+
+ 
+
+SQL> create or replace procedure go_fishing( p_cursor in out sys_refcursor )
+  2  as
+  3      l_query long := 'select fish_id';
+  4  begin
+  5      for x in (select distinct fish_type from fish order by 1 )
+  6      loop
+  7          l_query := l_query ||
+  8             replace( q'|, sum(decode(fish_type,'$X$',fish_weight)) $X$|',
+  9                      '$X$',
+ 10                      dbms_assert.simple_sql_name(x.fish_type) );
+ 11      end loop;
+ 12  
+ 13      l_query := l_query || ' from fish group by fish_id order by fish_id';
+ 14  
+ 15      open p_cursor for l_query;
+ 16  end;
+ 17  /
+
+Procedure created.
+
+ 
+
+Note: In Listing 2, the fish_type column is obviously a foreign key to another table in which fish_type is the primary key. The table in which fish_type is the primary key is the lookup table for valid fish types. Replace my SELECT DISTINCT... with a simple SELECT against that table.
+
+What I did in the stored procedure in Listing 2 was to generate a list of distinct fish types and add a column to the query for each one. I used the string
+
+ 
+
+q'|, sum(decode(fish_type,'$X$',
+fish_weight)) $X$|'
+
+ 
+
+as a template for the original static SQL:
+
+ 
+
+sum(decode(fish_type,'COD',
+fish_weight)) cod,
+
+ 
+
+The only thing I had to do with the template was replace $X$ (a string I chose at random to represent COD, HAD, and so on) with the value x.fish_type. Note that I did not just replace $X$ with the value x.fish_type blindly. I used the DBMS_ASSERT package to validate that the data I was concatenating into the SQL statement was “safe”—that it was a simple SQL name and not some SQL that would change the meaning of my SQL statement. In short, that DBMS_ASSERT call is protecting against SQL injection. If SQL injection is a topic you are not up to speed on, or if you just want to see some really interesting SQL injection techniques, I encourage you to check out bit.ly/IgU3YQ and bit.ly/K7aAKW.
+
+After I build the query in a string, I use a ref cursor to open a cursor that can be sent back to a client application, as shown in Listing 3.
+
+Code Listing 3: Ref cursor, cursor, and fetch
+
+ 
+
+SQL> variable x refcursor
+SQL> exec go_fishing( :x )
+
+PL/SQL procedure successfully completed.
+
+SQL> print x
+
+   FISH_ID        COD        CTY        HAD        HKE        LIN
+——————————  —————————  ————————— ——————————  —————————  —————————
+         1         20                    30
+         2         45                               10         55
+         3         52         90         60
+
+ 
